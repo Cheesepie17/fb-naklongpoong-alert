@@ -1,0 +1,41 @@
+name: Check Facebook Post
+
+on:
+  schedule:
+    # รันอัตโนมัติทุกๆ 15 นาที
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # ปุ่มกดสั่งรันเองได้ด้วย
+
+permissions:
+  contents: write
+
+jobs:
+  scrape-and-notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install playwright requests
+          playwright install chromium
+
+      - name: Run Notifier
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py
+
+      - name: Commit & Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_post.json
+          git commit -m "Update last post cache [skip ci]" || exit 0
+          git push
