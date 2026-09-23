@@ -16,7 +16,8 @@ def clean_facebook_text(raw_text):
     
     garbage_keywords = [
         "นักลงพุง", "like", "comment", "share", "top fan", "see more", 
-        "just now", "all reactions", "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น"
+        "just now", "all reactions", "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น",
+        "ดูเพิ่มเติม", "all reactions:"
     ]
     
     for line in lines:
@@ -32,43 +33,48 @@ def clean_facebook_text(raw_text):
         if re.match(r"^\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที).*$", lower_line):
             continue
             
-        if any(g == lower_line for g in garbage_keywords):
+        if any(g == lower_line or lower_line.startswith(g) for g in garbage_keywords):
             continue
             
         cleaned_lines.append(stripped)
     
     cleaned_text = "\n\n".join(cleaned_lines)
-    cleaned_text = re.sub(r"\.\.\.\s*(See more|ดูเพิ่มเติม)", "...", cleaned_text, flags=re.IGNORECASE)
+    # ลบเศษคำตกค้าง
+    cleaned_text = re.sub(r"\.\.\.\s*(See more|ดูเพิ่มเติม)", "", cleaned_text, flags=re.IGNORECASE)
     return cleaned_text.strip()
 
-def send_discord_webhook(content, url):
-    """ส่งข้อความรูปแบบ Embed ที่ปรับแต่งให้อ่านง่ายบนธีมสีขาว (Light Mode)"""
+def send_discord_webhook(content, url, image_url=None):
+    """ส่งข้อความฉบับเต็ม พร้อมแนบรูปภาพโพสต์"""
     if not DISCORD_WEBHOOK_URL:
         print("❌ ไม่พบ DISCORD_WEBHOOK_URL")
         return
 
-    # จัดย่อหน้าข้อความให้อ่านง่ายในกล่อง Blockquote
-    preview = content[:400]
-    formatted_content = "\n".join([f"> {line}" for line in preview.split("\n") if line.strip()])
-    
-    if len(content) > 400:
-        formatted_content += "\n> \n> *(... มีเนื้อหาต่อ)*"
+    # ตัดขอบเขตความยาวไม่ให้เกิน Limit ของ Discord (4,000 ตัวอักษร)
+    if len(content) > 3800:
+        content = content[:3800] + "\n\n...(เนื้อหายาวเกินกำหนด อ่านต่อได้ที่ลิงก์ด้านล่าง)"
+
+    # ตกแต่งข้อความให้อ่านง่าย
+    formatted_content = "\n".join([f"> {line}" for line in content.split("\n") if line.strip()])
+
+    embed = {
+        "title": "📌 โพสต์ใหม่จาก นักลงพุง",
+        "url": url,
+        "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์บน Facebook]({url})**",
+        "color": 1603570,  # Facebook Blue (#1877F2) สีคมชัดบนพื้นขาว
+        "footer": {
+            "text": "เพจ: นักลงพุง • อัปเดตล่าสุด"
+        }
+    }
+
+    # ถ้ามีรูปภาพ ให้แปะรูปใหญ่เข้าไปใน Embed
+    if image_url:
+        embed["image"] = {"url": image_url}
 
     payload = {
         "content": "📢 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
         "username": "นักลงพุง Feed",
         "avatar_url": "https://img.icons8.com/color/512/facebook-new.png",
-        "embeds": [
-            {
-                "title": "📌 สรุปเนื้อหาโพสต์ล่าสุด",
-                "url": url,
-                "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์เต็มบน Facebook]({url})**",
-                "color": 1603570,  # Facebook Blue (#1877F2) คมชัดที่สุดบนพื้นหลังสีขาว
-                "footer": {
-                    "text": "เพจ: นักลงพุง • อัปเดตล่าสุด"
-                }
-            }
-        ]
+        "embeds": [embed]
     }
     
     try:
@@ -81,7 +87,7 @@ def send_discord_webhook(content, url):
         print(f"เกิดข้อผิดพลาดในการส่ง Discord: {e}")
 
 def get_recent_posts():
-    """ดึงข้อมูลโพสต์และทำความสะอาดเนื้อหา"""
+    """ดึงข้อมูลโพสต์แบบเต็ม + สกัดรูปล่าสุด"""
     posts_data = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -93,22 +99,44 @@ def get_recent_posts():
             page.goto(PAGE_URL, wait_until="networkidle", timeout=35000)
             page.wait_for_timeout(3000)
             
+            # เลื่อนหน้าจอลงเพื่อโหลดข้อมูล
             page.evaluate("window.scrollBy(0, 1500)")
             page.wait_for_timeout(2000)
+
+            # กดปุ่ม "See more / ดูเพิ่มเติม" ทั้งหมดเพื่อขยายข้อความเต็ม
+            see_more_btns = page.locator('div[role="button"]:has-text("See more"), div[role="button"]:has-text("ดูเพิ่มเติม"), span:has-text("See more"), span:has-text("ดูเพิ่มเติม")')
+            for i in range(min(5, see_more_btns.count())):
+                try:
+                    see_more_btns.nth(i).click(timeout=1000)
+                except Exception:
+                    pass
+            page.wait_for_timeout(1000)
 
             posts = page.locator('div[role="feed"] > div, div[role="article"]')
             count = posts.count()
             
             for i in range(count):
-                raw_text = posts.nth(i).inner_text().strip()
+                post_elem = posts.nth(i)
+                raw_text = post_elem.inner_text().strip()
                 clean_text = clean_facebook_text(raw_text)
                 
                 if len(clean_text) > 30:
                     post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
                     if post_id not in [p["id"] for p in posts_data]:
+                        # ค้นหารูปภาพประกอบโพสต์
+                        image_url = None
+                        imgs = post_elem.locator('img')
+                        for img_idx in range(imgs.count()):
+                            src = imgs.nth(img_idx).get_attribute("src")
+                            # กรองเฉพาะรูปที่เป็นภาพคอนเทนต์ (ไม่ใช่ไอคอนขนาดเล็ก)
+                            if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src:
+                                image_url = src
+                                break
+
                         posts_data.append({
                             "id": post_id,
                             "clean_text": clean_text,
+                            "image_url": image_url,
                             "url": PAGE_URL
                         })
                 if len(posts_data) >= 5:
@@ -147,7 +175,11 @@ def main():
     if new_posts_found:
         print(f"🔔 ตรวจพบโพสต์ใหม่ {len(new_posts_found)} โพสต์ กำลังส่งเข้า Discord...")
         for post in new_posts_found:
-            send_discord_webhook(content=post["clean_text"], url=post["url"])
+            send_discord_webhook(
+                content=post["clean_text"], 
+                url=post["url"], 
+                image_url=post.get("image_url")
+            )
             history_ids.append(post["id"])
 
         history_ids = history_ids[-30:]
