@@ -8,12 +8,10 @@ from playwright.sync_api import sync_playwright
 PAGE_URL = "https://www.facebook.com/naklongpoong"
 STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-
-# ใช้รูปโลโก้นักลงพุงที่อัปโหลดขึ้น GitHub
 AVATAR_URL = "https://raw.githubusercontent.com/Cheesepie17/fb-naklongpoong-alert/main/avatar.jpg"
 
 def clean_facebook_text(raw_text):
-    """ทำความสะอาดข้อความ ลบปุ่มและสถิติต่างๆ ของ Facebook ออก ให้เหลือเฉพาะเนื้อหาจริง"""
+    """ทำความสะอาดข้อความ ลบปุ่มและสถิติต่างๆ ของ Facebook ออก"""
     lines = raw_text.split("\n")
     cleaned_lines = []
     
@@ -29,51 +27,42 @@ def clean_facebook_text(raw_text):
             continue
         
         lower_line = stripped.lower()
-        
-        # ตัดบรรทัดตัวเลขสถิติ เช่น ยอดไลก์
         if stripped.isdigit():
             continue
-            
-        # ตัดบรรทัดเวลา เช่น 35m, 2h, 1d
         if re.match(r"^\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที).*$", lower_line):
             continue
-            
-        # ตัดบรรทัดเมนูขยะ
         if any(g == lower_line or lower_line.startswith(g) for g in garbage_keywords):
             continue
             
         cleaned_lines.append(stripped)
     
     cleaned_text = "\n\n".join(cleaned_lines)
-    # ลบคำตกค้าง เช่น ... See more หรือ ดูเพิ่มเติม
     cleaned_text = re.sub(r"(\.\.\.)?\s*(See more|ดูเพิ่มเติม)", "", cleaned_text, flags=re.IGNORECASE)
     return cleaned_text.strip()
 
 def send_discord_webhook(content, url, image_url=None):
-    """ส่งเนื้อหาเต็มและรูปภาพเข้า Discord"""
     if not DISCORD_WEBHOOK_URL:
         print("❌ ไม่พบ DISCORD_WEBHOOK_URL")
         return
 
-    # จัดย่อหน้าข้อความให้อ่านง่ายแบบ Blockquote
+    if len(content) > 3800:
+        content = content[:3800] + "\n\n...(เนื้อหายาวเกินกำหนด อ่านต่อได้ที่ลิงก์ด้านล่าง)"
+
     formatted_content = "\n".join([f"> {line}" for line in content.split("\n") if line.strip()])
 
     embed = {
-        "title": "📌 โพสต์ใหม่จาก นักลงพุง",
+        "title": "📌 โพสต์จาก นักลงพุง",
         "url": url,
         "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์บน Facebook]({url})**",
-        "color": 1603570,  # สีน้ำเงิน Facebook ชัดเจนบนพื้นขาว
-        "footer": {
-            "text": "เพจ: นักลงพุง • อัปเดตล่าสุด"
-        }
+        "color": 1603570,
+        "footer": {"text": "เพจ: นักลงพุง"}
     }
 
-    # ถ้ามีรูปภาพ ให้แสดงรูปใหญ่
     if image_url:
         embed["image"] = {"url": image_url}
 
     payload = {
-        "content": "📢 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
+        "content": "📢 **โพสต์จากเพจ นักลงพุง!** @everyone",
         "username": "นักลงพุง",
         "avatar_url": AVATAR_URL,
         "embeds": [embed]
@@ -82,14 +71,13 @@ def send_discord_webhook(content, url, image_url=None):
     try:
         res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
         if res.status_code in [200, 204]:
-            print("✅ ส่งแจ้งเตือนเข้า Discord สำเร็จ!")
+            print("✅ ส่งโพสต์เข้า Discord สำเร็จ!")
         else:
             print(f"❌ ส่งไม่สำเร็จ: HTTP {res.status_code}")
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในการส่ง Discord: {e}")
 
 def get_recent_posts():
-    """เปิดหน้าเว็บ ขยายข้อความเต็ม 100% และดึงรูปภาพ"""
     posts_data = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -99,14 +87,16 @@ def get_recent_posts():
         )
         page = context.new_page()
         try:
-            page.goto(PAGE_URL, wait_until="networkidle", timeout=35000)
+            print("กำลังเปิดหน้าเว็บ Facebook...")
+            page.goto(PAGE_URL, wait_until="networkidle", timeout=40000)
             page.wait_for_timeout(3000)
             
-            # เลื่อนจอลงเพื่อโหลดโพสต์
-            page.evaluate("window.scrollBy(0, 1500)")
-            page.wait_for_timeout(2000)
+            # เลื่อนหน้าจอลง 5 ครั้ง เพื่อโหลดโพสต์ย้อนหลังขึ้นมาให้ครบ
+            for scroll_idx in range(5):
+                page.evaluate("window.scrollBy(0, 2000)")
+                page.wait_for_timeout(1500)
 
-            # ใช้ JavaScript กวาดกดปุ่ม "See more / ดูเพิ่มเติม" ทุกจุดเพื่อคลี่ข้อความเต็ม 100%
+            # กางข้อความ See more ทั้งหมด
             page.evaluate("""
                 () => {
                     const elements = document.querySelectorAll('div[role="button"], span');
@@ -118,25 +108,24 @@ def get_recent_posts():
                     });
                 }
             """)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1500)
 
             posts = page.locator('div[role="feed"] > div, div[role="article"]')
             count = posts.count()
+            print(f"พบโพสต์ทั้งหมด {count} โพสต์ กำลังประมวลผล...")
             
             for i in range(count):
                 post_elem = posts.nth(i)
                 raw_text = post_elem.inner_text().strip()
                 clean_text = clean_facebook_text(raw_text)
                 
-                if len(clean_text) > 30:
+                if len(clean_text) > 40:
                     post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
                     if post_id not in [p["id"] for p in posts_data]:
-                        # ค้นหารูปภาพประกอบโพสต์
                         image_url = None
                         imgs = post_elem.locator('img')
                         for img_idx in range(imgs.count()):
                             src = imgs.nth(img_idx).get_attribute("src")
-                            # คัดเฉพาะรูปที่เป็นคอนเทนต์ (ตัดไอคอนและ emoji ออก)
                             if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src:
                                 image_url = src
                                 break
@@ -147,7 +136,8 @@ def get_recent_posts():
                             "image_url": image_url,
                             "url": PAGE_URL
                         })
-                if len(posts_data) >= 5:
+                # ดึงสูงสุด 8 โพสต์ย้อนหลัง
+                if len(posts_data) >= 8:
                     break
         except Exception as e:
             print(f"Scraping Error: {e}")
@@ -181,7 +171,7 @@ def main():
             new_posts_found.append(post)
 
     if new_posts_found:
-        print(f"🔔 ตรวจพบโพสต์ใหม่ {len(new_posts_found)} โพสต์ กำลังส่งเข้า Discord...")
+        print(f"🔔 พบโพสต์ที่ยังไม่ได้ส่ง {len(new_posts_found)} โพสต์ กำลังส่งเข้า Discord...")
         for post in new_posts_found:
             send_discord_webhook(
                 content=post["clean_text"], 
@@ -190,7 +180,8 @@ def main():
             )
             history_ids.append(post["id"])
 
-        history_ids = history_ids[-30:]
+        # เก็บประวัติ 50 โพสต์
+        history_ids = history_ids[-50:]
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(history_ids, f, ensure_ascii=False, indent=2)
     else:
