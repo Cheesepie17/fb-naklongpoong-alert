@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 PAGE_URL = "https://www.facebook.com/naklongpoong"
 STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-AVATAR_URL = "https://raw.githubusercontent.com/Cheesepie17/fb-naklongpoong-alert/main/avatar.jpg"
+AVATAR_URL = "https://media.discordapp.net/attachments/1001883395724415080/1552413471352692907/606397074_122176730570788275_2696545743468565014_n.jpg?ex=6ab58536&is=6ab433b6&hm=1bfaf4ba9e49a50d194f4ea754982091ee51f055c97e54adebf4bec25e83d35f&=&format=webp&width=640&height=640"
 
 def clean_facebook_text(raw_text):
     """ทำความสะอาดข้อความ ลบปุ่มและสถิติต่างๆ ของ Facebook ออก"""
