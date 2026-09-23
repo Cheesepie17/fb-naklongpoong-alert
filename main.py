@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import hashlib
 import requests
@@ -8,24 +9,63 @@ PAGE_URL = "https://www.facebook.com/naklongpoong"
 STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
+def clean_facebook_text(raw_text):
+    """ทำความสะอาดข้อความ ลบปุ่มและสถิติต่างๆ ของ Facebook ออก"""
+    lines = raw_text.split("\n")
+    cleaned_lines = []
+    
+    garbage_keywords = [
+        "นักลงพุง", "like", "comment", "share", "top fan", "see more", 
+        "just now", "all reactions", "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น"
+    ]
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped == "-":
+            continue
+        
+        lower_line = stripped.lower()
+        
+        if stripped.isdigit():
+            continue
+            
+        if re.match(r"^\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที).*$", lower_line):
+            continue
+            
+        if any(g == lower_line for g in garbage_keywords):
+            continue
+            
+        cleaned_lines.append(stripped)
+    
+    cleaned_text = "\n\n".join(cleaned_lines)
+    cleaned_text = re.sub(r"\.\.\.\s*(See more|ดูเพิ่มเติม)", "...", cleaned_text, flags=re.IGNORECASE)
+    return cleaned_text.strip()
+
 def send_discord_webhook(content, url):
-    """ส่งแจ้งเตือนเข้า Discord พร้อมแท็ก @everyone ให้เด้งบน iPhone"""
+    """ส่งข้อความรูปแบบ Embed ที่ปรับแต่งให้อ่านง่ายบนธีมสีขาว (Light Mode)"""
     if not DISCORD_WEBHOOK_URL:
         print("❌ ไม่พบ DISCORD_WEBHOOK_URL")
         return
 
+    # จัดย่อหน้าข้อความให้อ่านง่ายในกล่อง Blockquote
+    preview = content[:400]
+    formatted_content = "\n".join([f"> {line}" for line in preview.split("\n") if line.strip()])
+    
+    if len(content) > 400:
+        formatted_content += "\n> \n> *(... มีเนื้อหาต่อ)*"
+
     payload = {
         "content": "📢 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
-        "username": "นักลงพุง Notifier",
+        "username": "นักลงพุง Feed",
         "avatar_url": "https://img.icons8.com/color/512/facebook-new.png",
         "embeds": [
             {
-                "title": "🔗 กดเพื่อเปิดอ่านโพสต์บน Facebook",
+                "title": "📌 สรุปเนื้อหาโพสต์ล่าสุด",
                 "url": url,
-                "description": content,
-                "color": 3447003,
+                "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์เต็มบน Facebook]({url})**",
+                "color": 1603570,  # Facebook Blue (#1877F2) คมชัดที่สุดบนพื้นหลังสีขาว
                 "footer": {
-                    "text": "Facebook Page Monitor • naklongpoong"
+                    "text": "เพจ: นักลงพุง • อัปเดตล่าสุด"
                 }
             }
         ]
@@ -41,7 +81,7 @@ def send_discord_webhook(content, url):
         print(f"เกิดข้อผิดพลาดในการส่ง Discord: {e}")
 
 def get_recent_posts():
-    """ดึงข้อมูลโพสต์ย้อนหลัง 5 โพสต์ล่าสุดจากหน้าเพจ"""
+    """ดึงข้อมูลโพสต์และทำความสะอาดเนื้อหา"""
     posts_data = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -53,25 +93,22 @@ def get_recent_posts():
             page.goto(PAGE_URL, wait_until="networkidle", timeout=35000)
             page.wait_for_timeout(3000)
             
-            # เลื่อนหน้าจอลงเพื่อโหลดโพสต์ย้อนหลัง
             page.evaluate("window.scrollBy(0, 1500)")
             page.wait_for_timeout(2000)
 
             posts = page.locator('div[role="feed"] > div, div[role="article"]')
             count = posts.count()
             
-            # กวาดตรวจ 5 โพสต์ล่าสุด
             for i in range(count):
-                text = posts.nth(i).inner_text().strip()
-                # กรองเอาเฉพาะกล่องที่มีข้อความโพสต์จริง
-                if len(text) > 30:
-                    post_id = hashlib.md5(text.encode("utf-8")).hexdigest()
+                raw_text = posts.nth(i).inner_text().strip()
+                clean_text = clean_facebook_text(raw_text)
+                
+                if len(clean_text) > 30:
+                    post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
                     if post_id not in [p["id"] for p in posts_data]:
-                        preview_text = text[:350] + ("..." if len(text) > 350 else "")
                         posts_data.append({
                             "id": post_id,
-                            "preview": preview_text,
-                            "full_text": text,
+                            "clean_text": clean_text,
                             "url": PAGE_URL
                         })
                 if len(posts_data) >= 5:
@@ -89,7 +126,6 @@ def main():
         print("⚠️ ไม่พบโพสต์ หรือโหลดหน้าเว็บไม่สำเร็จ")
         return
 
-    # 1. โหลดประวัติโพสต์ที่เคยแจ้งเตือนแล้ว
     history_ids = []
     if os.path.exists(STORAGE_FILE):
         try:
@@ -103,25 +139,22 @@ def main():
         except Exception:
             history_ids = []
 
-    # 2. ค้นหาโพสต์ใหม่ที่ยังไม่เคยส่ง
     new_posts_found = []
-    for post in reversed(recent_posts):  # เรียงจากโพสต์เก่าไปใหม่
+    for post in reversed(recent_posts):
         if post["id"] not in history_ids:
             new_posts_found.append(post)
 
-    # 3. ส่งแจ้งเตือนเฉพาะโพสต์ใหม่
     if new_posts_found:
         print(f"🔔 ตรวจพบโพสต์ใหม่ {len(new_posts_found)} โพสต์ กำลังส่งเข้า Discord...")
         for post in new_posts_found:
-            send_discord_webhook(content=post["preview"], url=post["url"])
+            send_discord_webhook(content=post["clean_text"], url=post["url"])
             history_ids.append(post["id"])
 
-        # บันทึกประวัติ 30 โพสต์ล่าสุดลงไฟล์
         history_ids = history_ids[-30:]
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(history_ids, f, ensure_ascii=False, indent=2)
     else:
-        print("ℹ️ ไม่มีโพสต์ใหม่ (ทุกโพสต์เคยส่งแจ้งเตือนไปแล้ว)")
+        print("ℹ️ ไม่มีโพสต์ใหม่")
 
 if __name__ == "__main__":
     main()
