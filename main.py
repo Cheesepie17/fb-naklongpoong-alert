@@ -9,15 +9,18 @@ PAGE_URL = "https://www.facebook.com/naklongpoong"
 STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
+# ใช้รูปโลโก้นักลงพุงที่อัปโหลดขึ้น GitHub
+AVATAR_URL = "https://raw.githubusercontent.com/Cheesepie17/fb-naklongpoong-alert/main/avatar.jpg"
+
 def clean_facebook_text(raw_text):
-    """ทำความสะอาดข้อความ ลบปุ่มและสถิติต่างๆ ของ Facebook ออก"""
+    """ทำความสะอาดข้อความ ลบปุ่มและสถิติต่างๆ ของ Facebook ออก ให้เหลือเฉพาะเนื้อหาจริง"""
     lines = raw_text.split("\n")
     cleaned_lines = []
     
     garbage_keywords = [
         "นักลงพุง", "like", "comment", "share", "top fan", "see more", 
         "just now", "all reactions", "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น",
-        "ดูเพิ่มเติม", "all reactions:"
+        "ดูเพิ่มเติม", "all reactions:", "เขียนความคิดเห็น...", "write a comment..."
     ]
     
     for line in lines:
@@ -27,53 +30,52 @@ def clean_facebook_text(raw_text):
         
         lower_line = stripped.lower()
         
+        # ตัดบรรทัดตัวเลขสถิติ เช่น ยอดไลก์
         if stripped.isdigit():
             continue
             
+        # ตัดบรรทัดเวลา เช่น 35m, 2h, 1d
         if re.match(r"^\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที).*$", lower_line):
             continue
             
+        # ตัดบรรทัดเมนูขยะ
         if any(g == lower_line or lower_line.startswith(g) for g in garbage_keywords):
             continue
             
         cleaned_lines.append(stripped)
     
     cleaned_text = "\n\n".join(cleaned_lines)
-    # ลบเศษคำตกค้าง
-    cleaned_text = re.sub(r"\.\.\.\s*(See more|ดูเพิ่มเติม)", "", cleaned_text, flags=re.IGNORECASE)
+    # ลบคำตกค้าง เช่น ... See more หรือ ดูเพิ่มเติม
+    cleaned_text = re.sub(r"(\.\.\.)?\s*(See more|ดูเพิ่มเติม)", "", cleaned_text, flags=re.IGNORECASE)
     return cleaned_text.strip()
 
 def send_discord_webhook(content, url, image_url=None):
-    """ส่งข้อความฉบับเต็ม พร้อมแนบรูปภาพโพสต์"""
+    """ส่งเนื้อหาเต็มและรูปภาพเข้า Discord"""
     if not DISCORD_WEBHOOK_URL:
         print("❌ ไม่พบ DISCORD_WEBHOOK_URL")
         return
 
-    # ตัดขอบเขตความยาวไม่ให้เกิน Limit ของ Discord (4,000 ตัวอักษร)
-    if len(content) > 3800:
-        content = content[:3800] + "\n\n...(เนื้อหายาวเกินกำหนด อ่านต่อได้ที่ลิงก์ด้านล่าง)"
-
-    # ตกแต่งข้อความให้อ่านง่าย
+    # จัดย่อหน้าข้อความให้อ่านง่ายแบบ Blockquote
     formatted_content = "\n".join([f"> {line}" for line in content.split("\n") if line.strip()])
 
     embed = {
         "title": "📌 โพสต์ใหม่จาก นักลงพุง",
         "url": url,
         "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์บน Facebook]({url})**",
-        "color": 1603570,  # Facebook Blue (#1877F2) สีคมชัดบนพื้นขาว
+        "color": 1603570,  # สีน้ำเงิน Facebook ชัดเจนบนพื้นขาว
         "footer": {
             "text": "เพจ: นักลงพุง • อัปเดตล่าสุด"
         }
     }
 
-    # ถ้ามีรูปภาพ ให้แปะรูปใหญ่เข้าไปใน Embed
+    # ถ้ามีรูปภาพ ให้แสดงรูปใหญ่
     if image_url:
         embed["image"] = {"url": image_url}
 
     payload = {
         "content": "📢 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
-        "username": "นักลงพุง Feed",
-        "avatar_url": "https://img.icons8.com/color/512/facebook-new.png",
+        "username": "นักลงพุง",
+        "avatar_url": AVATAR_URL,
         "embeds": [embed]
     }
     
@@ -87,30 +89,36 @@ def send_discord_webhook(content, url, image_url=None):
         print(f"เกิดข้อผิดพลาดในการส่ง Discord: {e}")
 
 def get_recent_posts():
-    """ดึงข้อมูลโพสต์แบบเต็ม + สกัดรูปล่าสุด"""
+    """เปิดหน้าเว็บ ขยายข้อความเต็ม 100% และดึงรูปภาพ"""
     posts_data = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 900}
         )
         page = context.new_page()
         try:
             page.goto(PAGE_URL, wait_until="networkidle", timeout=35000)
             page.wait_for_timeout(3000)
             
-            # เลื่อนหน้าจอลงเพื่อโหลดข้อมูล
+            # เลื่อนจอลงเพื่อโหลดโพสต์
             page.evaluate("window.scrollBy(0, 1500)")
             page.wait_for_timeout(2000)
 
-            # กดปุ่ม "See more / ดูเพิ่มเติม" ทั้งหมดเพื่อขยายข้อความเต็ม
-            see_more_btns = page.locator('div[role="button"]:has-text("See more"), div[role="button"]:has-text("ดูเพิ่มเติม"), span:has-text("See more"), span:has-text("ดูเพิ่มเติม")')
-            for i in range(min(5, see_more_btns.count())):
-                try:
-                    see_more_btns.nth(i).click(timeout=1000)
-                except Exception:
-                    pass
-            page.wait_for_timeout(1000)
+            # ใช้ JavaScript กวาดกดปุ่ม "See more / ดูเพิ่มเติม" ทุกจุดเพื่อคลี่ข้อความเต็ม 100%
+            page.evaluate("""
+                () => {
+                    const elements = document.querySelectorAll('div[role="button"], span');
+                    elements.forEach(el => {
+                        const txt = (el.innerText || '').trim();
+                        if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
+                            el.click();
+                        }
+                    });
+                }
+            """)
+            page.wait_for_timeout(2000)
 
             posts = page.locator('div[role="feed"] > div, div[role="article"]')
             count = posts.count()
@@ -128,7 +136,7 @@ def get_recent_posts():
                         imgs = post_elem.locator('img')
                         for img_idx in range(imgs.count()):
                             src = imgs.nth(img_idx).get_attribute("src")
-                            # กรองเฉพาะรูปที่เป็นภาพคอนเทนต์ (ไม่ใช่ไอคอนขนาดเล็ก)
+                            # คัดเฉพาะรูปที่เป็นคอนเทนต์ (ตัดไอคอนและ emoji ออก)
                             if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src:
                                 image_url = src
                                 break
