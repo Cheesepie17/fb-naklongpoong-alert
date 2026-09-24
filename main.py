@@ -30,6 +30,7 @@ def clean_facebook_text(raw_text):
         stripped = line.strip()
         if not stripped or stripped == "-":
             continue
+        
         lower = stripped.lower()
         if stripped.isdigit():
             continue
@@ -39,6 +40,7 @@ def clean_facebook_text(raw_text):
             break
         if any(g == lower or lower.startswith(g) for g in garbage_exact):
             continue
+            
         cleaned_lines.append(stripped)
     
     cleaned_text = "\n\n".join(cleaned_lines)
@@ -83,7 +85,7 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
 
 def get_recent_posts(mode="normal"):
     collected_posts = {}
-    scroll_steps = 14 if mode == "yesterday" else 8
+    scroll_steps = 10 if mode == "yesterday" else 6
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -98,18 +100,13 @@ def get_recent_posts(mode="normal"):
             page.wait_for_timeout(3000)
 
             for step in range(scroll_steps):
-                # ปลดล็อกคำสั่งแอบล็อกหน้าจอของ Facebook ทิ้งทั้งหมดด้วย JavaScript
+                # 1. ลบ Popup และปลดล็อก CSS
                 page.evaluate("""
                     () => {
-                        // 1. ลบกล่อง Popup Login
                         document.querySelectorAll('div[role="dialog"], [aria-label*="log in"], [aria-label*="เข้าสู่ระบบ"]').forEach(el => el.remove());
-                        
-                        // 2. ปลดล็อกคำสั่งห้ามเลื่อนจอ (overflow hidden)
                         document.body.style.overflow = 'visible';
                         document.documentElement.style.overflow = 'visible';
-                        document.body.style.position = 'static';
                         
-                        // 3. กางปุ่ม See more ทั้งหมด
                         document.querySelectorAll('div[role="button"], span').forEach(el => {
                             const txt = (el.innerText || '').trim();
                             if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
@@ -118,9 +115,8 @@ def get_recent_posts(mode="normal"):
                         });
                     }
                 """)
-                page.wait_for_timeout(1000)
 
-                # กวาดหาโพสต์ในหน้าจอนี้
+                # 2. กวาดเก็บโพสต์ทั้งหมดที่ปรากฏอยู่
                 posts = page.locator('div[role="feed"] > div, div[role="article"]')
                 count = posts.count()
                 
@@ -150,9 +146,12 @@ def get_recent_posts(mode="normal"):
                                 "url": PAGE_URL
                             }
 
-                # เลื่อนหน้าจอลงลึกๆ
-                page.evaluate("window.scrollBy(0, 2500)")
-                page.wait_for_timeout(2000)
+                print(f"📍 สเต็ปที่ {step+1}: กวาดพบสะสมแล้ว {len(collected_posts)} โพสต์")
+
+                # 3. ใช้คำสั่งจำลองการหมุนล้อเมาส์ + กด PageDown บังคับให้หน้าจอเลื่อนจริง
+                page.mouse.wheel(0, 3000)
+                page.keyboard.press("PageDown")
+                page.wait_for_timeout(2500)
 
         except Exception as e:
             print(f"Scraping Error: {e}")
@@ -209,7 +208,6 @@ def main():
             )
             history_ids.append(post["id"])
 
-        # บันทึกจำประวัติลงไฟล์
         history_ids = history_ids[-100:]
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(history_ids, f, ensure_ascii=False, indent=2)
