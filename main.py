@@ -5,15 +5,10 @@ import hashlib
 import requests
 from playwright.sync_api import sync_playwright
 
-PAGE_URL = "https://www.facebook.com/naklongpoong"
+PAGE_URL = "https://m.facebook.com/naklongpoong"
 STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 RUN_MODE = os.environ.get("RUN_MODE", "normal").strip().lower()
-
-def is_yesterday_post(raw_text):
-    lower = raw_text.lower()
-    keywords = ["yesterday", "เมื่อวาน", "1 d", "1d", "1 day", "24h", "20h", "21h", "22h", "23h"]
-    return any(k in lower for k in keywords)
 
 def clean_facebook_text(raw_text):
     lines = raw_text.split("\n")
@@ -83,51 +78,47 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในการส่ง Discord: {e}")
 
-def get_recent_posts(mode="normal"):
+def get_recent_posts():
     collected_posts = {}
-    scroll_steps = 10 if mode == "yesterday" else 6
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # จำลองเป็น iPhone หน้าจอมือถือ เพื่อไม่ให้ติดบล็อกของ Facebook
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 1000}
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            viewport={"width": 414, "height": 896},
+            is_mobile=True,
+            has_touch=True
         )
         page = context.new_page()
         try:
-            print(f"กำลังเปิด Facebook (โหมด: {mode})...")
+            print("กำลังเปิดหน้าเพจ Facebook (Mobile Mode)...")
             page.goto(PAGE_URL, wait_until="networkidle", timeout=45000)
             page.wait_for_timeout(3000)
 
-            for step in range(scroll_steps):
-                # 1. ลบ Popup และปลดล็อก CSS
+            # เลื่อนจอลง 8 รอบแบบมือถือ
+            for step in range(8):
+                # กางปุ่ม See more / ดูเพิ่มเติม ทั้งหมด
                 page.evaluate("""
                     () => {
-                        document.querySelectorAll('div[role="dialog"], [aria-label*="log in"], [aria-label*="เข้าสู่ระบบ"]').forEach(el => el.remove());
-                        document.body.style.overflow = 'visible';
-                        document.documentElement.style.overflow = 'visible';
-                        
-                        document.querySelectorAll('div[role="button"], span').forEach(el => {
+                        document.querySelectorAll('div[role="button"], span, a').forEach(el => {
                             const txt = (el.innerText || '').trim();
-                            if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
+                            if (txt === 'See more' || txt === 'ดูเพิ่มเติม' || txt.includes('ดูเพิ่มเติม')) {
                                 el.click();
                             }
                         });
                     }
                 """)
 
-                # 2. กวาดเก็บโพสต์ทั้งหมดที่ปรากฏอยู่
-                posts = page.locator('div[role="feed"] > div, div[role="article"]')
+                # กวาดหาโพสต์ทั้งหมดในหน้าจอ
+                posts = page.locator('article, div[role="article"], div[data-tracking], div[data-ft]')
                 count = posts.count()
                 
                 for i in range(count):
                     post_elem = posts.nth(i)
                     raw_text = post_elem.inner_text().strip()
-                    
-                    if mode == "yesterday" and not is_yesterday_post(raw_text):
-                        continue
-
                     clean_text = clean_facebook_text(raw_text)
+                    
                     if len(clean_text) > 30:
                         post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
                         if post_id not in collected_posts:
@@ -135,7 +126,7 @@ def get_recent_posts(mode="normal"):
                             imgs = post_elem.locator('img')
                             for img_idx in range(imgs.count()):
                                 src = imgs.nth(img_idx).get_attribute("src")
-                                if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src:
+                                if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src and "static" not in src:
                                     image_url = src
                                     break
 
@@ -143,15 +134,14 @@ def get_recent_posts(mode="normal"):
                                 "id": post_id,
                                 "clean_text": clean_text,
                                 "image_url": image_url,
-                                "url": PAGE_URL
+                                "url": "https://www.facebook.com/naklongpoong"
                             }
 
-                print(f"📍 สเต็ปที่ {step+1}: กวาดพบสะสมแล้ว {len(collected_posts)} โพสต์")
+                print(f"📍 สเต็ปที่ {step+1}: กวาดพบสะสม {len(collected_posts)} โพสต์")
 
-                # 3. ใช้คำสั่งจำลองการหมุนล้อเมาส์ + กด PageDown บังคับให้หน้าจอเลื่อนจริง
-                page.mouse.wheel(0, 3000)
-                page.keyboard.press("PageDown")
-                page.wait_for_timeout(2500)
+                # เลื่อนหน้าจอลง
+                page.evaluate("window.scrollBy(0, 1500)")
+                page.wait_for_timeout(2000)
 
         except Exception as e:
             print(f"Scraping Error: {e}")
@@ -161,23 +151,12 @@ def get_recent_posts(mode="normal"):
     return list(collected_posts.values())
 
 def main():
-    recent_posts = get_recent_posts(mode=RUN_MODE)
+    recent_posts = get_recent_posts()
     if not recent_posts:
         print("⚠️ ไม่พบโพสต์ หรือโหลดหน้าเว็บไม่สำเร็จ")
         return
 
     print(f"📊 สรุปกวาดพบโพสต์ทั้งหมด: {len(recent_posts)} โพสต์")
-
-    if RUN_MODE == "yesterday":
-        print("📅 กำลังส่งโพสต์ของเมื่อวานเข้า Discord...")
-        for post in reversed(recent_posts):
-            send_discord_webhook(
-                content=post["clean_text"],
-                url=post["url"],
-                image_url=post.get("image_url"),
-                title="📅 [ย้อนหลังเมื่อวาน] โพสต์จาก นักลงพุง"
-            )
-        return
 
     history_ids = []
     if os.path.exists(STORAGE_FILE):
@@ -212,7 +191,7 @@ def main():
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(history_ids, f, ensure_ascii=False, indent=2)
             
-        print("💾 บันทึกประวัติ last_post.json สำเร็จ!")
+        print("💾 บันทึกประวัติสำเร็จ!")
     else:
         print("ℹ️ ไม่มีโพสต์ใหม่")
 
