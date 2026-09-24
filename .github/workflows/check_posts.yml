@@ -2,7 +2,6 @@ name: Check Facebook Post
 
 on:
   schedule:
-    # รันอัตโนมัติทุกๆ 15 นาที
     - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
@@ -25,6 +24,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -47,6 +48,5 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_post.json
-          git commit -m "Update last post cache [skip ci]" || exit 0
-          git push
+          git add -A
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update post cache [skip ci]" && git push)
