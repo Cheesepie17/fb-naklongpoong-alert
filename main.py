@@ -5,10 +5,9 @@ import hashlib
 import requests
 from playwright.sync_api import sync_playwright
 
-PAGE_URL = "https://m.facebook.com/naklongpoong"
+PAGE_URL = "https://www.facebook.com/naklongpoong"
 STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-RUN_MODE = os.environ.get("RUN_MODE", "normal").strip().lower()
 
 def clean_facebook_text(raw_text):
     lines = raw_text.split("\n")
@@ -25,7 +24,6 @@ def clean_facebook_text(raw_text):
         stripped = line.strip()
         if not stripped or stripped == "-":
             continue
-        
         lower = stripped.lower()
         if stripped.isdigit():
             continue
@@ -35,14 +33,13 @@ def clean_facebook_text(raw_text):
             break
         if any(g == lower or lower.startswith(g) for g in garbage_exact):
             continue
-            
         cleaned_lines.append(stripped)
     
     cleaned_text = "\n\n".join(cleaned_lines)
     cleaned_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม)", "", cleaned_text, flags=re.IGNORECASE)
     return cleaned_text.strip()
 
-def send_discord_webhook(content, url, image_url=None, title="📌 โพสต์จาก นักลงพุง"):
+def send_discord_webhook(content, url, image_url=None):
     if not DISCORD_WEBHOOK_URL:
         print("❌ ไม่พบ DISCORD_WEBHOOK_URL")
         return
@@ -53,7 +50,7 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
     formatted_content = "\n".join([f"> {line}" for line in content.split("\n") if line.strip()])
 
     embed = {
-        "title": title,
+        "title": "📌 โพสต์ใหม่จาก นักลงพุง",
         "url": url,
         "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์บน Facebook]({url})**",
         "color": 1603570,
@@ -64,7 +61,7 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
         embed["image"] = {"url": image_url}
 
     payload = {
-        "content": f"📢 **{title}!** @everyone",
+        "content": "📢 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
         "username": "นักลงพุง",
         "embeds": [embed]
     }
@@ -72,7 +69,7 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
     try:
         res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
         if res.status_code in [200, 204]:
-            print(f"✅ ส่งโพสต์เข้า Discord สำเร็จ: {content[:30]}...")
+            print(f"✅ ส่งโพสต์เข้า Discord สำเร็จ!")
         else:
             print(f"❌ ส่งไม่สำเร็จ: HTTP {res.status_code}")
     except Exception as e:
@@ -80,68 +77,61 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
 
 def get_recent_posts():
     collected_posts = {}
-    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # จำลองเป็น iPhone หน้าจอมือถือ เพื่อไม่ให้ติดบล็อกของ Facebook
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            viewport={"width": 414, "height": 896},
-            is_mobile=True,
-            has_touch=True
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 1000}
         )
         page = context.new_page()
         try:
-            print("กำลังเปิดหน้าเพจ Facebook (Mobile Mode)...")
+            print("กำลังเปิดหน้าเพจ Facebook...")
             page.goto(PAGE_URL, wait_until="networkidle", timeout=45000)
             page.wait_for_timeout(3000)
 
-            # เลื่อนจอลง 8 รอบแบบมือถือ
-            for step in range(8):
-                # กางปุ่ม See more / ดูเพิ่มเติม ทั้งหมด
-                page.evaluate("""
-                    () => {
-                        document.querySelectorAll('div[role="button"], span, a').forEach(el => {
-                            const txt = (el.innerText || '').trim();
-                            if (txt === 'See more' || txt === 'ดูเพิ่มเติม' || txt.includes('ดูเพิ่มเติม')) {
-                                el.click();
-                            }
-                        });
-                    }
-                """)
+            # กางข้อความ See more ทั้งหมด
+            page.evaluate("""
+                () => {
+                    document.querySelectorAll('div[role="dialog"]').forEach(el => el.remove());
+                    document.querySelectorAll('div[role="button"], span').forEach(el => {
+                        const txt = (el.innerText || '').trim();
+                        if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
+                            el.click();
+                        }
+                    });
+                }
+            """)
+            page.wait_for_timeout(1500)
 
-                # กวาดหาโพสต์ทั้งหมดในหน้าจอ
-                posts = page.locator('article, div[role="article"], div[data-tracking], div[data-ft]')
-                count = posts.count()
+            # ค้นหาโพสต์บนหน้าจอ
+            posts = page.locator('div[role="feed"] > div, div[role="article"]')
+            count = posts.count()
+            print(f"ตรวจพบกล่องโพสต์: {count} รายการ")
+
+            for i in range(count):
+                post_elem = posts.nth(i)
+                raw_text = post_elem.inner_text().strip()
+                clean_text = clean_facebook_text(raw_text)
                 
-                for i in range(count):
-                    post_elem = posts.nth(i)
-                    raw_text = post_elem.inner_text().strip()
-                    clean_text = clean_facebook_text(raw_text)
-                    
-                    if len(clean_text) > 30:
-                        post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
-                        if post_id not in collected_posts:
-                            image_url = None
-                            imgs = post_elem.locator('img')
-                            for img_idx in range(imgs.count()):
-                                src = imgs.nth(img_idx).get_attribute("src")
-                                if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src and "static" not in src:
-                                    image_url = src
-                                    break
+                if len(clean_text) > 30:
+                    post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
+                    if post_id not in collected_posts:
+                        image_url = None
+                        imgs = post_elem.locator('img')
+                        for img_idx in range(imgs.count()):
+                            src = imgs.nth(img_idx).get_attribute("src")
+                            if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src and "static" not in src:
+                                image_url = src
+                                break
 
-                            collected_posts[post_id] = {
-                                "id": post_id,
-                                "clean_text": clean_text,
-                                "image_url": image_url,
-                                "url": "https://www.facebook.com/naklongpoong"
-                            }
-
-                print(f"📍 สเต็ปที่ {step+1}: กวาดพบสะสม {len(collected_posts)} โพสต์")
-
-                # เลื่อนหน้าจอลง
-                page.evaluate("window.scrollBy(0, 1500)")
-                page.wait_for_timeout(2000)
+                        collected_posts[post_id] = {
+                            "id": post_id,
+                            "clean_text": clean_text,
+                            "image_url": image_url,
+                            "url": PAGE_URL
+                        }
+                if len(collected_posts) >= 5:
+                    break
 
         except Exception as e:
             print(f"Scraping Error: {e}")
@@ -156,7 +146,7 @@ def main():
         print("⚠️ ไม่พบโพสต์ หรือโหลดหน้าเว็บไม่สำเร็จ")
         return
 
-    print(f"📊 สรุปกวาดพบโพสต์ทั้งหมด: {len(recent_posts)} โพสต์")
+    print(f"📊 สรุปตรวจพบโพสต์: {len(recent_posts)} โพสต์")
 
     history_ids = []
     if os.path.exists(STORAGE_FILE):
@@ -182,8 +172,7 @@ def main():
             send_discord_webhook(
                 content=post["clean_text"], 
                 url=post["url"], 
-                image_url=post.get("image_url"),
-                title="📌 มีโพสต์ใหม่จากเพจ นักลงพุง"
+                image_url=post.get("image_url")
             )
             history_ids.append(post["id"])
 
@@ -193,7 +182,7 @@ def main():
             
         print("💾 บันทึกประวัติสำเร็จ!")
     else:
-        print("ℹ️ ไม่มีโพสต์ใหม่")
+        print("ℹ️ ไม่มีโพสต์ใหม่ (ส่งไปหมดแล้ว)")
 
 if __name__ == "__main__":
     main()
