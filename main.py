@@ -16,7 +16,6 @@ def is_yesterday_post(raw_text):
     return any(k in lower for k in keywords)
 
 def clean_facebook_text(raw_text):
-    """ทำความสะอาดข้อความ ลบปุ่ม สถิติ และคอมเมนต์ของลูกเพจออก"""
     lines = raw_text.split("\n")
     cleaned_lines = []
     
@@ -31,18 +30,15 @@ def clean_facebook_text(raw_text):
         stripped = line.strip()
         if not stripped or stripped == "-":
             continue
-        
         lower = stripped.lower()
         if stripped.isdigit():
             continue
-        if re.match(r"^(\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที)|about an hour ago|yesterday|เมื่อสักครู่).*$", lower):
+        if re.match(r"^(\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที|ชั่วโมง)|about an hour ago|yesterday|เมื่อสักครู่).*$", lower):
             continue
-        # ถ้าเจอกล่องเริ่มคอมเมนต์ ให้ตัดส่วนล่างทิ้งทั้งหมด
         if any(c in lower for c in ["view more comments", "ดูความคิดเห็นเพิ่มเติม", "top fan", "subscriber", "ผู้ติดตามตัวยง"]):
             break
         if any(g == lower or lower.startswith(g) for g in garbage_exact):
             continue
-            
         cleaned_lines.append(stripped)
     
     cleaned_text = "\n\n".join(cleaned_lines)
@@ -63,7 +59,7 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
         "title": title,
         "url": url,
         "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์บน Facebook]({url})**",
-        "color": 1603570,  # สีน้ำเงิน Facebook คมชัดบนพื้นขาว
+        "color": 1603570,
         "footer": {"text": "เพจ: นักลงพุง • อัปเดตล่าสุด"}
     }
 
@@ -86,9 +82,8 @@ def send_discord_webhook(content, url, image_url=None, title="📌 โพสต�
         print(f"เกิดข้อผิดพลาดในการส่ง Discord: {e}")
 
 def get_recent_posts(mode="normal"):
-    """กวาดเก็บโพสต์แบบสดๆ ทุกรอบที่เลื่อนหน้าจอ (Progressive Scraping)"""
     collected_posts = {}
-    scroll_steps = 12 if mode == "yesterday" else 7
+    scroll_steps = 14 if mode == "yesterday" else 8
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -98,24 +93,24 @@ def get_recent_posts(mode="normal"):
         )
         page = context.new_page()
         try:
-            print(f"กำลังเปิดหน้าเพจ Facebook (โหมด: {mode})...")
-            page.goto(PAGE_URL, wait_until="networkidle", timeout=40000)
+            print(f"กำลังเปิด Facebook (โหมด: {mode})...")
+            page.goto(PAGE_URL, wait_until="networkidle", timeout=45000)
             page.wait_for_timeout(3000)
 
             for step in range(scroll_steps):
-                # 1. ปิดป๊อปอัป Login ถ้ามีโผล่มาบัง
-                try:
-                    close_btn = page.locator('div[aria-label="Close"], div[aria-label="ปิด"], div[role="dialog"] div[role="button"]')
-                    if close_btn.count() > 0:
-                        close_btn.first.click(timeout=1000)
-                except Exception:
-                    pass
-
-                # 2. กางปุ่ม See more เพื่อดึงข้อความเต็ม
+                # ปลดล็อกคำสั่งแอบล็อกหน้าจอของ Facebook ทิ้งทั้งหมดด้วย JavaScript
                 page.evaluate("""
                     () => {
-                        const elements = document.querySelectorAll('div[role="button"], span');
-                        elements.forEach(el => {
+                        // 1. ลบกล่อง Popup Login
+                        document.querySelectorAll('div[role="dialog"], [aria-label*="log in"], [aria-label*="เข้าสู่ระบบ"]').forEach(el => el.remove());
+                        
+                        // 2. ปลดล็อกคำสั่งห้ามเลื่อนจอ (overflow hidden)
+                        document.body.style.overflow = 'visible';
+                        document.documentElement.style.overflow = 'visible';
+                        document.body.style.position = 'static';
+                        
+                        // 3. กางปุ่ม See more ทั้งหมด
+                        document.querySelectorAll('div[role="button"], span').forEach(el => {
                             const txt = (el.innerText || '').trim();
                             if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
                                 el.click();
@@ -125,7 +120,7 @@ def get_recent_posts(mode="normal"):
                 """)
                 page.wait_for_timeout(1000)
 
-                # 3. กวาดเก็บโพสต์ในหน้าจอปัจจุบัน
+                # กวาดหาโพสต์ในหน้าจอนี้
                 posts = page.locator('div[role="feed"] > div, div[role="article"]')
                 count = posts.count()
                 
@@ -137,7 +132,7 @@ def get_recent_posts(mode="normal"):
                         continue
 
                     clean_text = clean_facebook_text(raw_text)
-                    if len(clean_text) > 40:
+                    if len(clean_text) > 30:
                         post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
                         if post_id not in collected_posts:
                             image_url = None
@@ -155,9 +150,9 @@ def get_recent_posts(mode="normal"):
                                 "url": PAGE_URL
                             }
 
-                # 4. เลื่อนจอลงเพื่อกวาดเพิ่ม
-                page.evaluate("window.scrollBy(0, 1800)")
-                page.wait_for_timeout(1500)
+                # เลื่อนหน้าจอลงลึกๆ
+                page.evaluate("window.scrollBy(0, 2500)")
+                page.wait_for_timeout(2000)
 
         except Exception as e:
             print(f"Scraping Error: {e}")
@@ -174,7 +169,6 @@ def main():
 
     print(f"📊 สรุปกวาดพบโพสต์ทั้งหมด: {len(recent_posts)} โพสต์")
 
-    # โหมดดึงเมื่อวาน
     if RUN_MODE == "yesterday":
         print("📅 กำลังส่งโพสต์ของเมื่อวานเข้า Discord...")
         for post in reversed(recent_posts):
@@ -186,7 +180,6 @@ def main():
             )
         return
 
-    # โหมดปกติตรวจจับอัตโนมัติ
     history_ids = []
     if os.path.exists(STORAGE_FILE):
         try:
@@ -206,7 +199,7 @@ def main():
             new_posts_found.append(post)
 
     if new_posts_found:
-        print(f"🔔 ตรวจพบโพสต์ใหม่ที่ยังไม่ได้ส่ง {len(new_posts_found)} โพสต์ กำลังส่งเข้า Discord...")
+        print(f"🔔 ตรวจพบโพสต์ใหม่ {len(new_posts_found)} โพสต์ กำลังส่งเข้า Discord...")
         for post in new_posts_found:
             send_discord_webhook(
                 content=post["clean_text"], 
@@ -216,9 +209,12 @@ def main():
             )
             history_ids.append(post["id"])
 
+        # บันทึกจำประวัติลงไฟล์
         history_ids = history_ids[-100:]
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(history_ids, f, ensure_ascii=False, indent=2)
+            
+        print("💾 บันทึกประวัติ last_post.json สำเร็จ!")
     else:
         print("ℹ️ ไม่มีโพสต์ใหม่")
 
