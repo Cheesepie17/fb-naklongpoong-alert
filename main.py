@@ -10,35 +10,60 @@ STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 FB_COOKIES_RAW = os.environ.get("FB_COOKIES")
 
-def clean_facebook_text(raw_text):
+def clean_and_deduplicate_text(raw_text):
+    """ทำความสะอาดข้อความ ลบคำขยะ และตัดย่อหน้าที่เบิ้ลซ้ำออก 100%"""
     lines = raw_text.split("\n")
     cleaned_lines = []
     
-    garbage_exact = [
-        "นักลงพุง", "like", "comment", "share", "top fan", "see more", "see less",
-        "just now", "all reactions", "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น",
-        "ดูเพิ่มเติม", "all reactions:", "เขียนความคิดเห็น...", "write a comment...",
-        "view more comments", "ดูความคิดเห็นเพิ่มเติม", "subscriber", "ผู้ติดตามตัวยง"
+    garbage_keywords = [
+        "view more comments", "ดูความคิดเห็นเพิ่มเติม", "นักลงพุง", "like", "comment",
+        "share", "top fan", "see more", "see less", "just now", "all reactions",
+        "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น", "ดูเพิ่มเติม", "all reactions:",
+        "เขียนความคิดเห็น...", "write a comment...", "subscriber", "ผู้ติดตามตัวยง"
     ]
     
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped == "-":
             continue
+        
         lower = stripped.lower()
         if stripped.isdigit():
             continue
+            
+        # ตัดบรรทัดเวลา
         if re.match(r"^(\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที|ชั่วโมง)|about an hour ago|yesterday|เมื่อสักครู่).*$", lower):
             continue
-        if any(c in lower for c in ["view more comments", "ดูความคิดเห็นเพิ่มเติม", "top fan", "subscriber", "ผู้ติดตามตัวยง"]):
+            
+        # ถ้าเจอปุ่มคอมเมนต์ให้หยุดตัดส่วนล่างทิ้งทั้งหมด
+        if any(g in lower for g in ["view more comments", "ดูความคิดเห็นเพิ่มเติม", "top fan", "subscriber", "ผู้ติดตามตัวยง"]):
             break
-        if any(g == lower or lower.startswith(g) for g in garbage_exact):
+            
+        # ตัดคำขยะเดี่ยวๆ
+        if any(g == lower for g in garbage_keywords):
             continue
+            
         cleaned_lines.append(stripped)
+
+    # รวมเป็นข้อความ
+    full_text = "\n\n".join(cleaned_lines)
+    full_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม)", "", full_text, flags=re.IGNORECASE).strip()
+
+    # --- ระบบตัดย่อหน้าและประโยคที่เบิ้ลซ้ำ (Deduplication) ---
+    paragraphs = [p.strip() for p in full_text.split("\n\n") if p.strip()]
+    unique_paragraphs = []
+    for p in paragraphs:
+        if p not in unique_paragraphs:
+            unique_paragraphs.append(p)
+            
+    result = "\n\n".join(unique_paragraphs).strip()
     
-    cleaned_text = "\n\n".join(cleaned_lines)
-    cleaned_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม)", "", cleaned_text, flags=re.IGNORECASE)
-    return cleaned_text.strip()
+    # กรณีข้อความยาวท่อนแรกซ้ำกับท่อนหลังเป๊ะๆ (เช่น duplicate จาก DOM)
+    half_len = len(result) // 2
+    if half_len > 30 and result[:half_len].strip() == result[half_len:].strip():
+        result = result[:half_len].strip()
+        
+    return result
 
 def send_discord_webhook(content, url, image_url=None):
     if not DISCORD_WEBHOOK_URL:
@@ -86,7 +111,6 @@ def get_recent_posts():
             viewport={"width": 1280, "height": 1000}
         )
 
-        # นำ Cookies ที่ล็อกอินแล้วใส่เข้าไปในเบราว์เซอร์
         if FB_COOKIES_RAW:
             try:
                 cookies = json.loads(FB_COOKIES_RAW)
@@ -101,10 +125,9 @@ def get_recent_posts():
             page.goto(PAGE_URL, wait_until="networkidle", timeout=45000)
             page.wait_for_timeout(3000)
 
-            # ทำการเลื่อน 8 สเต็ปเพื่อกวาดโพสต์ให้ครบถ้วน
             for step in range(8):
-                # กางข้อความ See more ทั้งหมด
-                page.evaluate("""
+                # สกัดข้อความเฉพาะจุด ไม่ดึงแท็กลูกซ้ำซ้อน
+                extracted = page.evaluate("""
                     () => {
                         document.querySelectorAll('div[role="dialog"]').forEach(el => el.remove());
                         document.querySelectorAll('div[role="button"], span').forEach(el => {
@@ -127,13 +150,20 @@ def get_recent_posts():
                             if (msgNode) {
                                 text = msgNode.innerText.trim();
                             } else {
-                                const textNodes = Array.from(clone.querySelectorAll('div[dir="auto"], span[dir="auto"]'))
-                                    .map(n => n.innerText.trim())
-                                    .filter(t => t.length > 10 && !t.includes('นักลงพุง') && !t.includes('ถูกใจ') && !t.includes('แชร์'));
-                                text = textNodes.join('\\n\\n');
+                                // ดึงเฉพาะ container ข้อความหลัก ไม่ดึงแท็กลูกทั้งหมด
+                                const textBlocks = [];
+                                const dirNodes = clone.querySelectorAll('div[dir="auto"]');
+                                dirNodes.forEach(node => {
+                                    // ข้ามถ้าเป็น child ของ div[dir="auto"] อื่นเพื่อกันข้อความเบิ้ล
+                                    if (!node.parentElement.closest('div[dir="auto"]')) {
+                                        const t = node.innerText.trim();
+                                        if (t.length > 10 && !t.includes('นักลงพุง') && !t.includes('ถูกใจ') && !t.includes('แชร์')) {
+                                            textBlocks.push(t);
+                                        }
+                                    }
+                                });
+                                text = textBlocks.join('\\n\\n');
                             }
-
-                            text = text.replace(/(\\.\\.\\.)?\\s*(See more|See less|ดูเพิ่มเติม)/gi, '').trim();
 
                             let imgUrl = null;
                             const img = art.querySelector('img[src*="fbcdn"]');
@@ -150,33 +180,22 @@ def get_recent_posts():
                     }
                 """)
 
-                posts = page.locator('div[role="feed"] > div, div[role="article"]')
-                count = posts.count()
-                
-                for i in range(count):
-                    post_elem = posts.nth(i)
-                    raw_text = post_elem.inner_text().strip()
-                    clean_text = clean_facebook_text(raw_text)
-                    
+                for item in extracted:
+                    clean_text = clean_and_deduplicate_text(item["text"])
                     if len(clean_text) > 15:
-                        post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
+                        # สร้าง ID จากข้อความ 80 ตัวอักษรแรก เพื่อความเสถียรไม่ให้ส่งซ้ำ
+                        clean_signature = re.sub(r"\s+", "", clean_text[:80])
+                        post_id = hashlib.md5(clean_signature.encode("utf-8")).hexdigest()
+                        
                         if post_id not in collected_posts:
-                            image_url = None
-                            imgs = post_elem.locator('img')
-                            for img_idx in range(imgs.count()):
-                                src = imgs.nth(img_idx).get_attribute("src")
-                                if src and "fbcdn" in src and "emoji" not in src and "rsrc.php" not in src and "static" not in src:
-                                    image_url = src
-                                    break
-
                             collected_posts[post_id] = {
                                 "id": post_id,
                                 "clean_text": clean_text,
-                                "image_url": image_url,
+                                "image_url": item["img"],
                                 "url": PAGE_URL
                             }
 
-                print(f"📍 สเต็ปที่ {step+1}: กวาดพบสะสมแล้ว {len(collected_posts)} โพสต์")
+                print(f"📍 สเต็ปที่ {step+1}: กวาดพบสะสม {len(collected_posts)} โพสต์")
 
                 page.mouse.wheel(0, 2500)
                 page.keyboard.press("PageDown")
