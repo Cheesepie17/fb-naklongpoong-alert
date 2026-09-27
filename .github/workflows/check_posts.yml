@@ -4,15 +4,6 @@ on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
-    inputs:
-      mode:
-        description: 'เลือกโหมดการทำงาน'
-        required: true
-        default: 'normal'
-        type: choice
-        options:
-          - normal
-          - yesterday
 
 permissions:
   contents: write
@@ -24,8 +15,6 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -40,11 +29,10 @@ jobs:
       - name: Run Notifier
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          RUN_MODE: ${{ github.event.inputs.mode || 'normal' }}
+          FB_COOKIES: ${{ secrets.FB_COOKIES }}
         run: python main.py
 
       - name: Commit & Push Changes
-        if: ${{ github.event.inputs.mode != 'yesterday' }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
