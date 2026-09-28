@@ -250,27 +250,18 @@ def main():
         except Exception:
             history_ids = []
 
-    # ป้องกันการสแปมรอบแรก: ถ้าประวัติยังว่าง ให้จำทุกโพสต์เป็นฐานข้อมูลเริ่มต้นทันที
     if not history_ids:
-        print("[INFO] ไฟล์ประวัติยังว่างเปล่า กำลังบันทึกโพสต์ปัจจุบันเป็นฐานข้อมูลเริ่มต้น...")
-        for post in recent_posts:
-            history_ids.append(post["id"])
+        print("[INFO] ไฟล์ประวัติยังว่างเปล่า กำลังบันทึกโพสต์ปัจจุบันทั้งหมดลงประวัติ...")
+        history_ids = [p["id"] for p in recent_posts]
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(history_ids, f, ensure_ascii=False, indent=2)
-        print("[INFO] เริ่มต้นระบบจำประวัติสำเร็จ (ไม่ส่งโพสต์เก่าย้อนหลัง)")
+        print("[INFO] เริ่มต้นระบบจำประวัติสำเร็จ (ไม่ส่งโพสต์เก่า)")
         return
 
     new_posts_found = []
     for post in reversed(recent_posts):
         if post["id"] not in history_ids:
             new_posts_found.append(post)
-
-    # ป้องกันสแปม: ส่งไม่เกิน 2 โพสต์ล่าสุดต่อรอบ
-    if len(new_posts_found) > 2:
-        print(f"[WARNING] ตรวจพบโพสต์ใหม่ {len(new_posts_found)} โพสต์ (จะส่งเฉพาะ 2 โพสต์ล่าสุด)")
-        for p in new_posts_found[:-2]:
-            history_ids.append(p["id"])
-        new_posts_found = new_posts_found[-2:]
 
     if new_posts_found:
         print(f"[INFO] พบ {len(new_posts_found)} โพสต์ใหม่ กำลังส่งเข้า Discord...")
@@ -281,14 +272,18 @@ def main():
                 image_url=post.get("image_url")
             )
             history_ids.append(post["id"])
-
-        history_ids = history_ids[-200:]
-        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-            json.dump(history_ids, f, ensure_ascii=False, indent=2)
-            
-        print("[INFO] บันทึกประวัติโพสต์ลงไฟล์ last_post.json สำเร็จ")
     else:
         print("[INFO] ไม่มีโพสต์ใหม่ (ส่งแจ้งเตือนไปครบหมดแล้ว)")
+
+    for post in recent_posts:
+        if post["id"] not in history_ids:
+            history_ids.append(post["id"])
+
+    history_ids = history_ids[-200:]
+    with open(STORAGE_FILE, "w", encoding="utf-8") as f:
+        json.dump(history_ids, f, ensure_ascii=False, indent=2)
+        
+    print("[INFO] บันทึกประวัติโพสต์ลงไฟล์ last_post.json สำเร็จ")
 
 if __name__ == "__main__":
     main()
