@@ -20,7 +20,7 @@ def clean_and_deduplicate_text(raw_text):
         "like", "comment", "share", "top fan", "see more", "see less", "just now", "all reactions",
         "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น", "ดูเพิ่มเติม", "all reactions:",
         "เขียนความคิดเห็น...", "write a comment...", "subscriber", "ผู้ติดตามตัวยง",
-        "ดูน้อยลง", "แก้ไขแล้ว"
+        "ดูน้อยลง", "แก้ไขแล้ว", "ตัวบ่งชี้สถานะออนไลน์", "กำลังใช้งาน"
     ]
     
     cleaned_lines = []
@@ -250,18 +250,17 @@ def main():
         except Exception:
             history_ids = []
 
-    if not history_ids:
-        print("[INFO] ไฟล์ประวัติยังว่างเปล่า กำลังบันทึกโพสต์ปัจจุบันทั้งหมดลงประวัติ...")
-        history_ids = [p["id"] for p in recent_posts]
-        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-            json.dump(history_ids, f, ensure_ascii=False, indent=2)
-        print("[INFO] เริ่มต้นระบบจำประวัติสำเร็จ (ไม่ส่งโพสต์เก่า)")
-        return
-
     new_posts_found = []
     for post in reversed(recent_posts):
         if post["id"] not in history_ids:
             new_posts_found.append(post)
+
+    # 🛑 ANTI-SPAM HARD LOCK: ถ้าพบโพสต์ใหม่เกิน 2 โพสต์ ให้บันทึกประวัติเงียบๆ ห้ามยิงสแปม!
+    if len(new_posts_found) > 2:
+        print(f"[SHIELD] พบโพสต์ใหม่ {len(new_posts_found)} โพสต์ (ดูดเก็บเข้าประวัติเงียบๆ ทั้งหมด ไม่ยิงสแปม)")
+        for p in new_posts_found:
+            history_ids.append(p["id"])
+        new_posts_found = []
 
     if new_posts_found:
         print(f"[INFO] พบ {len(new_posts_found)} โพสต์ใหม่ กำลังส่งเข้า Discord...")
