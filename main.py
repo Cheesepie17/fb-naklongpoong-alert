@@ -30,21 +30,17 @@ def clean_and_deduplicate_text(raw_text):
         lower = stripped.lower()
         if stripped.isdigit():
             continue
-        # กรองเวลา เช่น 1 ชม., 5 นาที, Yesterday
         if re.match(r"^(\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที|ชั่วโมง)|about an hour ago|yesterday|เมื่อสักครู่).*$", lower):
             continue
-        # ถ้าเริ่มเข้าสู่ส่วนคอมเมนต์ให้หยุดทันที
         if any(c in lower for c in ["view more comments", "ดูความคิดเห็นเพิ่มเติม", "top fan", "subscriber", "ผู้ติดตามตัวยง"]):
             break
         if any(g == lower or lower.startswith(g) for g in garbage_keywords):
             continue
         
-        # ป้องกันบรรทัดซ้ำติดกัน
         if not cleaned_lines or cleaned_lines[-1] != stripped:
             cleaned_lines.append(stripped)
             
     full_text = "\n\n".join(cleaned_lines)
-    # ลบเศษคำปุ่ม Facebook ที่อาจติดมาท้ายประโยค
     full_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม|ดูน้อยลง|แก้ไขแล้ว)", "", full_text, flags=re.IGNORECASE).strip()
     return full_text
 
@@ -53,11 +49,9 @@ def send_discord_webhook(content, url, image_url=None):
         print("[ERROR] ไม่พบค่า DISCORD_WEBHOOK_URL ใน Secrets")
         return False
 
-    # ตัดข้อความหากยาวเกินโควต้า Discord
     if len(content) > 3500:
         content = content[:3500] + "\n\n...(เนื้อหายาวเกินกำหนด อ่านต่อฉบับเต็มได้ที่ลิงก์ด้านล่าง)"
 
-    # ใส่แถบ Quote หน้าข้อความเพื่อความสวยงามและอ่านง่าย
     formatted_content = "\n".join([f"> {line}" for line in content.split("\n") if line.strip()])
 
     embed = {
@@ -102,7 +96,6 @@ def get_recent_posts():
             viewport={"width": 1280, "height": 900}
         )
         
-        # ใส่ Cookies ถ้ามีตั้งไว้ใน GitHub Secrets
         if FB_COOKIES_RAW:
             try:
                 cookies = json.loads(FB_COOKIES_RAW)
@@ -118,14 +111,11 @@ def get_recent_posts():
             page.goto(PAGE_URL, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(4000)
 
-            # กวาดข้อมูล 5 รอบ เพื่อให้ได้โพสต์ครบถ้วน
             for step in range(5):
                 extracted = page.evaluate("""
                     () => {
-                        // ปิดป๊อปอัปบังจอ
                         document.querySelectorAll('div[role="dialog"]').forEach(el => el.remove());
                         
-                        // กดปุ่ม 'ดูเพิ่มเติม' / 'See more'
                         document.querySelectorAll('div[role="button"], span').forEach(el => {
                             const txt = (el.innerText || '').trim();
                             if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
@@ -141,7 +131,6 @@ def get_recent_posts():
                             if (art.parentElement.closest('div[role="article"]')) return;
 
                             const clone = art.cloneNode(true);
-                            // ลบส่วนกล่องพิมพ์คอมเมนต์และปุ่มต่างๆ
                             clone.querySelectorAll('form, ul, ol, [role="toolbar"], button, [aria-label*="Comment"], [aria-label*="ความคิดเห็น"], [aria-label*="ตอบกลับ"], [aria-label*="Reply"], [aria-label*="reactions"]').forEach(trash => trash.remove());
 
                             let text = '';
@@ -149,7 +138,6 @@ def get_recent_posts():
                             if (msgNode) {
                                 text = msgNode.innerText.trim();
                             } else {
-                                // เลือกเฉพาะ div ข้อความชั้นนอกสุด ป้องกันข้อความซ้ำ
                                 const textNodes = Array.from(clone.querySelectorAll('div[dir="auto"], span[dir="auto"]'))
                                     .filter(node => !node.parentElement.closest('div[dir="auto"]'))
                                     .map(n => n.innerText.trim())
@@ -157,15 +145,33 @@ def get_recent_posts():
                                 text = textNodes.join('\\n\\n');
                             }
 
-                            // ค้นหารูปภาพประกอบโพสต์
+                            // ค้นหารูปภาพโพสต์จริง (คัดกรอง emoji และไอคอนระบบทิ้ง)
                             let imgUrl = null;
-                            const img = art.querySelector('img[src*="fbcdn"]');
-                            if (img && !img.src.includes('emoji') && !img.src.includes('rsrc.php') && !img.src.includes('static')) {
-                                imgUrl = img.src;
+                            const allImgs = Array.from(art.querySelectorAll('img'));
+                            for (const img of allImgs) {
+                                const src = img.src || '';
+                                if (!src || src.startsWith('data:')) continue;
+                                if (src.includes('emoji') || src.includes('rsrc.php') || src.includes('static.xx.fbcdn') || src.includes('/rsrc/')) continue;
+                                
+                                const w = img.naturalWidth || img.width || 0;
+                                const h = img.naturalHeight || img.height || 0;
+                                const isPhoto = img.closest('a') && (img.closest('a').href.includes('/photo') || img.closest('a').href.includes('/photos'));
+                                
+                                if (isPhoto || (src.includes('fbcdn') && (w > 80 || h > 80 || w === 0))) {
+                                    imgUrl = src;
+                                    break;
+                                }
+                            }
+
+                            // ค้นหาลิงก์ตรงของโพสต์ (ถ้ามี)
+                            let postLink = null;
+                            const linkNode = art.querySelector('a[href*="/posts/"], a[href*="/photo/"], a[href*="/photos/"], a[href*="permalink"]');
+                            if (linkNode && linkNode.href) {
+                                postLink = linkNode.href.split('?')[0];
                             }
 
                             if (text && text.length > 10) {
-                                results.push({ text: text, img: imgUrl });
+                                results.push({ text: text, img: imgUrl, link: postLink });
                             }
                         });
 
@@ -184,7 +190,7 @@ def get_recent_posts():
                             "id": post_id,
                             "clean_text": clean_text,
                             "image_url": item["img"],
-                            "url": PAGE_URL
+                            "url": item.get("link") or PAGE_URL
                         }
 
                 page.mouse.wheel(0, 1800)
@@ -223,7 +229,6 @@ def main():
         except Exception:
             history_ids = []
 
-    # ตรวจสอบหาโพสต์ใหม่ (เรียงจากเก่าไปใหม่ เพื่อให้แจ้งเตือนตามลำดับเวลา)
     new_posts_found = []
     for post in reversed(recent_posts):
         if post["id"] not in history_ids:
@@ -239,7 +244,6 @@ def main():
             )
             history_ids.append(post["id"])
 
-        # เก็บประวัติล่าสุด 200 รายการ
         history_ids = history_ids[-200:]
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(history_ids, f, ensure_ascii=False, indent=2)
