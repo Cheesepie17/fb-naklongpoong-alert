@@ -11,7 +11,6 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 FB_COOKIES_RAW = os.environ.get("FB_COOKIES")
 
 def clean_and_deduplicate_text(raw_text):
-    """ทำความสะอาดข้อความ ลบคำขยะ และตัดย่อหน้าที่เบิ้ลซ้ำออก 100%"""
     lines = raw_text.split("\n")
     cleaned_lines = []
     
@@ -31,25 +30,20 @@ def clean_and_deduplicate_text(raw_text):
         if stripped.isdigit():
             continue
             
-        # ตัดบรรทัดเวลา
         if re.match(r"^(\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที|ชั่วโมง)|about an hour ago|yesterday|เมื่อสักครู่).*$", lower):
             continue
             
-        # ถ้าเจอปุ่มคอมเมนต์ให้หยุดตัดส่วนล่างทิ้งทั้งหมด
         if any(g in lower for g in ["view more comments", "ดูความคิดเห็นเพิ่มเติม", "top fan", "subscriber", "ผู้ติดตามตัวยง"]):
             break
             
-        # ตัดคำขยะเดี่ยวๆ
         if any(g == lower for g in garbage_keywords):
             continue
             
         cleaned_lines.append(stripped)
 
-    # รวมเป็นข้อความ
     full_text = "\n\n".join(cleaned_lines)
     full_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม)", "", full_text, flags=re.IGNORECASE).strip()
 
-    # --- ระบบตัดย่อหน้าและประโยคที่เบิ้ลซ้ำ (Deduplication) ---
     paragraphs = [p.strip() for p in full_text.split("\n\n") if p.strip()]
     unique_paragraphs = []
     for p in paragraphs:
@@ -58,7 +52,6 @@ def clean_and_deduplicate_text(raw_text):
             
     result = "\n\n".join(unique_paragraphs).strip()
     
-    # กรณีข้อความยาวท่อนแรกซ้ำกับท่อนหลังเป๊ะๆ (เช่น duplicate จาก DOM)
     half_len = len(result) // 2
     if half_len > 30 and result[:half_len].strip() == result[half_len:].strip():
         result = result[:half_len].strip()
@@ -87,7 +80,7 @@ def send_discord_webhook(content, url, image_url=None):
         embed["image"] = {"url": image_url}
 
     payload = {
-        "content": "📢 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
+        "content": "📢 📌 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
         "username": "นักลงพุง",
         "embeds": [embed]
     }
@@ -122,11 +115,11 @@ def get_recent_posts():
         page = context.new_page()
         try:
             print("กำลังเปิดหน้าเพจ Facebook...")
-            page.goto(PAGE_URL, wait_until="networkidle", timeout=45000)
-            page.wait_for_timeout(3000)
+            # แก้ไขเป็น domcontentloaded เพื่อไม่ให้ติด Timeout จากระบบแชท Facebook
+            page.goto(PAGE_URL, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(4000)
 
             for step in range(8):
-                # สกัดข้อความเฉพาะจุด ไม่ดึงแท็กลูกซ้ำซ้อน
                 extracted = page.evaluate("""
                     () => {
                         document.querySelectorAll('div[role="dialog"]').forEach(el => el.remove());
@@ -150,11 +143,9 @@ def get_recent_posts():
                             if (msgNode) {
                                 text = msgNode.innerText.trim();
                             } else {
-                                // ดึงเฉพาะ container ข้อความหลัก ไม่ดึงแท็กลูกทั้งหมด
                                 const textBlocks = [];
                                 const dirNodes = clone.querySelectorAll('div[dir="auto"]');
                                 dirNodes.forEach(node => {
-                                    // ข้ามถ้าเป็น child ของ div[dir="auto"] อื่นเพื่อกันข้อความเบิ้ล
                                     if (!node.parentElement.closest('div[dir="auto"]')) {
                                         const t = node.innerText.trim();
                                         if (t.length > 10 && !t.includes('นักลงพุง') && !t.includes('ถูกใจ') && !t.includes('แชร์')) {
@@ -164,6 +155,8 @@ def get_recent_posts():
                                 });
                                 text = textBlocks.join('\\n\\n');
                             }
+
+                            text = text.replace(/(\\.\\.\\.)?\\s*(See more|See less|ดูเพิ่มเติม)/gi, '').trim();
 
                             let imgUrl = null;
                             const img = art.querySelector('img[src*="fbcdn"]');
@@ -183,7 +176,6 @@ def get_recent_posts():
                 for item in extracted:
                     clean_text = clean_and_deduplicate_text(item["text"])
                     if len(clean_text) > 15:
-                        # สร้าง ID จากข้อความ 80 ตัวอักษรแรก เพื่อความเสถียรไม่ให้ส่งซ้ำ
                         clean_signature = re.sub(r"\s+", "", clean_text[:80])
                         post_id = hashlib.md5(clean_signature.encode("utf-8")).hexdigest()
                         
