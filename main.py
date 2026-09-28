@@ -5,6 +5,7 @@ import hashlib
 import requests
 from playwright.sync_api import sync_playwright
 
+PAGE_NAME = "นักลงพุง"
 PAGE_URL = "https://www.facebook.com/naklongpoong"
 STORAGE_FILE = "last_post.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -17,7 +18,7 @@ def clean_and_deduplicate_text(raw_text):
     garbage_keywords = [
         "view more comments", "ดูความคิดเห็นเพิ่มเติม", "นักลงพุง", "like", "comment",
         "share", "top fan", "see more", "see less", "just now", "all reactions",
-        "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น", "ดูเพิ่มเติม", "all reactions:",
+        "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น", "ดูเพิ่มเติม", "ดูน้อยลง", "all reactions:",
         "เขียนความคิดเห็น...", "write a comment...", "subscriber", "ผู้ติดตามตัวยง"
     ]
     
@@ -42,7 +43,8 @@ def clean_and_deduplicate_text(raw_text):
         cleaned_lines.append(stripped)
 
     full_text = "\n\n".join(cleaned_lines)
-    full_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม)", "", full_text, flags=re.IGNORECASE).strip()
+    # ตัดคำว่า See more / See less / ดูเพิ่มเติม / ดูน้อยลง / แก้ไขแล้ว ออกทั้งหมด 100%
+    full_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม|ดูน้อยลง|แก้ไขแล้ว)", "", full_text, flags=re.IGNORECASE).strip()
 
     paragraphs = [p.strip() for p in full_text.split("\n\n") if p.strip()]
     unique_paragraphs = []
@@ -69,19 +71,19 @@ def send_discord_webhook(content, url, image_url=None):
     formatted_content = "\n".join([f"> {line}" for line in content.split("\n") if line.strip()])
 
     embed = {
-        "title": "📌 โพสต์ใหม่จาก นักลงพุง",
+        "title": f"📌 โพสต์ใหม่จาก {PAGE_NAME}",
         "url": url,
         "description": f"{formatted_content}\n\n🔗 **[กดตรงนี้เพื่อเปิดดูโพสต์บน Facebook]({url})**",
-        "color": 1603570,
-        "footer": {"text": "เพจ: นักลงพุง • อัปเดตล่าสุด"}
+        "color": 1603570, # สีน้ำเงิน Facebook คมชัด
+        "footer": {"text": f"เพจ: {PAGE_NAME} • อัปเดตล่าสุด"}
     }
 
     if image_url:
         embed["image"] = {"url": image_url}
 
     payload = {
-        "content": "📢 📌 **มีโพสต์ใหม่จากเพจ นักลงพุง!** @everyone",
-        "username": "นักลงพุง",
+        "content": f"📢 📌 **มีโพสต์ใหม่จากเพจ {PAGE_NAME}!** @everyone",
+        "username": PAGE_NAME,
         "embeds": [embed]
     }
     
@@ -114,8 +116,7 @@ def get_recent_posts():
 
         page = context.new_page()
         try:
-            print("กำลังเปิดหน้าเพจ Facebook...")
-            # แก้ไขเป็น domcontentloaded เพื่อไม่ให้ติด Timeout จากระบบแชท Facebook
+            print(f"กำลังเปิดหน้าเพจ Facebook: [{PAGE_NAME}]...")
             page.goto(PAGE_URL, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(4000)
 
@@ -156,96 +157,4 @@ def get_recent_posts():
                                 text = textBlocks.join('\\n\\n');
                             }
 
-                            text = text.replace(/(\\.\\.\\.)?\\s*(See more|See less|ดูเพิ่มเติม)/gi, '').trim();
-
-                            let imgUrl = null;
-                            const img = art.querySelector('img[src*="fbcdn"]');
-                            if (img && !img.src.includes('emoji') && !img.src.includes('rsrc.php') && !img.src.includes('static')) {
-                                imgUrl = img.src;
-                            }
-
-                            if (text && text.length > 15) {
-                                results.push({ text: text, img: imgUrl });
-                            }
-                        });
-
-                        return results;
-                    }
-                """)
-
-                for item in extracted:
-                    clean_text = clean_and_deduplicate_text(item["text"])
-                    if len(clean_text) > 15:
-                        clean_signature = re.sub(r"\s+", "", clean_text[:80])
-                        post_id = hashlib.md5(clean_signature.encode("utf-8")).hexdigest()
-                        
-                        if post_id not in collected_posts:
-                            collected_posts[post_id] = {
-                                "id": post_id,
-                                "clean_text": clean_text,
-                                "image_url": item["img"],
-                                "url": PAGE_URL
-                            }
-
-                print(f"📍 สเต็ปที่ {step+1}: กวาดพบสะสม {len(collected_posts)} โพสต์")
-
-                page.mouse.wheel(0, 2500)
-                page.keyboard.press("PageDown")
-                page.wait_for_timeout(2000)
-
-                if len(collected_posts) >= 20:
-                    break
-
-        except Exception as e:
-            print(f"Scraping Error: {e}")
-        finally:
-            browser.close()
-            
-    return list(collected_posts.values())
-
-def main():
-    recent_posts = get_recent_posts()
-    if not recent_posts:
-        print("⚠️ ไม่พบโพสต์ หรือโหลดหน้าเว็บไม่สำเร็จ")
-        return
-
-    print(f"📊 สรุปกวาดพบโพสต์ที่คลีนแล้ว: {len(recent_posts)} โพสต์")
-
-    history_ids = []
-    if os.path.exists(STORAGE_FILE):
-        try:
-            with open(STORAGE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    history_ids = data
-                elif isinstance(data, dict) and "full_text" in data:
-                    old_id = hashlib.md5(data["full_text"].encode("utf-8")).hexdigest()
-                    history_ids = [old_id]
-        except Exception:
-            history_ids = []
-
-    new_posts_found = []
-    for post in reversed(recent_posts):
-        if post["id"] not in history_ids:
-            new_posts_found.append(post)
-
-    if new_posts_found:
-        print(f"🔔 ตรวจพบโพสต์ใหม่ {len(new_posts_found)} โพสต์ กำลังส่งเข้า Discord...")
-        for post in new_posts_found:
-            send_discord_webhook(
-                content=post["clean_text"], 
-                url=post["url"], 
-                image_url=post.get("image_url")
-            )
-            history_ids.append(post["id"])
-
-        history_ids = history_ids[-200:]
-        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-            json.dump(history_ids, f, ensure_ascii=False, indent=2)
-            
-        print("💾 บันทึกประวัติสำเร็จ!")
-    else:
-        print("ℹ️ ไม่มีโพสต์ใหม่ (ส่งครบหมดแล้ว)")
-
-if __name__ == "__main__":
-    main()
+                            text =
