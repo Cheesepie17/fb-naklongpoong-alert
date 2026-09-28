@@ -47,7 +47,6 @@ def clean_and_deduplicate_text(raw_text):
                 
     full_text = "\n\n".join(cleaned_lines)
     
-    # ตรวจสอบหากข้อความเบิ้ลซ้ำ 2 ท่อนเหมือนกันเป๊ะ (A + A)
     half = len(full_text) // 2
     if half > 15:
         first_half = full_text[:half].strip()
@@ -140,7 +139,6 @@ def get_recent_posts():
                         document.querySelectorAll('div[role="dialog"]').forEach(el => el.remove());
                         const feed = document.querySelector('div[role="feed"]') || document.body;
                         
-                        // เลือกเฉพาะการ์ดโพสต์ชั้นนอกสุด ไม่เอาการ์ดคอมเมนต์
                         const articles = Array.from(feed.querySelectorAll('div[role="article"], div[data-pagelet^="FeedUnit"]'))
                             .filter(el => !el.parentElement.closest('div[role="article"]'));
                         
@@ -167,7 +165,6 @@ def get_recent_posts():
                                 text = uniqueBlocks.join('\\n\\n');
                             }
 
-                            // ค้นหารูปภาพโพสต์จริง (ข้ามอิโมจิ)
                             let imgUrl = null;
                             const allImgs = Array.from(art.querySelectorAll('img'));
                             for (const img of allImgs) {
@@ -204,7 +201,6 @@ def get_recent_posts():
                     if not clean_text or len(clean_text) < 10:
                         continue
                     
-                    # สร้าง Hash ที่แม่นยำจากหัวข้อ 50 ตัวอักษรแรก
                     clean_signature = re.sub(r"[^\w\dก-๙]+", "", clean_text)[:50]
                     post_id = hashlib.md5(clean_signature.encode("utf-8")).hexdigest()
 
@@ -251,16 +247,30 @@ def main():
                 data = json.load(f)
                 if isinstance(data, list):
                     history_ids = data
-                elif isinstance(data, dict) and "full_text" in data:
-                    old_id = hashlib.md5(data["full_text"].encode("utf-8")).hexdigest()
-                    history_ids = [old_id]
         except Exception:
             history_ids = []
+
+    # ป้องกันการสแปมรอบแรก: ถ้าประวัติยังว่าง ให้จำทุกโพสต์เป็นฐานข้อมูลเริ่มต้นทันที
+    if not history_ids:
+        print("[INFO] ไฟล์ประวัติยังว่างเปล่า กำลังบันทึกโพสต์ปัจจุบันเป็นฐานข้อมูลเริ่มต้น...")
+        for post in recent_posts:
+            history_ids.append(post["id"])
+        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(history_ids, f, ensure_ascii=False, indent=2)
+        print("[INFO] เริ่มต้นระบบจำประวัติสำเร็จ (ไม่ส่งโพสต์เก่าย้อนหลัง)")
+        return
 
     new_posts_found = []
     for post in reversed(recent_posts):
         if post["id"] not in history_ids:
             new_posts_found.append(post)
+
+    # ป้องกันสแปม: ส่งไม่เกิน 2 โพสต์ล่าสุดต่อรอบ
+    if len(new_posts_found) > 2:
+        print(f"[WARNING] ตรวจพบโพสต์ใหม่ {len(new_posts_found)} โพสต์ (จะส่งเฉพาะ 2 โพสต์ล่าสุด)")
+        for p in new_posts_found[:-2]:
+            history_ids.append(p["id"])
+        new_posts_found = new_posts_found[-2:]
 
     if new_posts_found:
         print(f"[INFO] พบ {len(new_posts_found)} โพสต์ใหม่ กำลังส่งเข้า Discord...")
