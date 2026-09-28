@@ -2,7 +2,7 @@ name: Check Facebook Post
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -36,5 +36,6 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase
           git add -A
           git diff --quiet && git diff --staged --quiet || (git commit -m "Update post cache [skip ci]" && git push)
