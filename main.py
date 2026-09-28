@@ -12,23 +12,21 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 FB_COOKIES_RAW = os.environ.get("FB_COOKIES")
 
 def clean_and_deduplicate_text(raw_text):
-    lines = raw_text.split("\n")
-    cleaned_lines = []
+    raw_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม|ดูน้อยลง|แก้ไขแล้ว)", "", raw_text, flags=re.IGNORECASE)
     
+    lines = [line.strip() for line in raw_text.split("\n") if line.strip() and line.strip() != "-"]
     garbage_keywords = [
-        "view more comments", "ดูความคิดเห็นเพิ่มเติม", "นักลงพุง",
+        "view more comments", "ดูความคิดเห็นเพิ่มเติม", PAGE_NAME.lower(),
         "like", "comment", "share", "top fan", "see more", "see less", "just now", "all reactions",
         "ผู้ติดตาม", "ถูกใจ", "แชร์", "ความคิดเห็น", "ดูเพิ่มเติม", "all reactions:",
         "เขียนความคิดเห็น...", "write a comment...", "subscriber", "ผู้ติดตามตัวยง",
         "ดูน้อยลง", "แก้ไขแล้ว"
     ]
     
+    cleaned_lines = []
     for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped == "-":
-            continue
-        lower = stripped.lower()
-        if stripped.isdigit():
+        lower = line.lower()
+        if line.isdigit():
             continue
         if re.match(r"^(\d+\s*(m|h|d|min|mins|minutes|hours|days|ชม\.|นาที|ชั่วโมง)|about an hour ago|yesterday|เมื่อสักครู่).*$", lower):
             continue
@@ -37,12 +35,27 @@ def clean_and_deduplicate_text(raw_text):
         if any(g == lower or lower.startswith(g) for g in garbage_keywords):
             continue
         
-        if not cleaned_lines or cleaned_lines[-1] != stripped:
-            cleaned_lines.append(stripped)
-            
+        if not cleaned_lines:
+            cleaned_lines.append(line)
+        else:
+            if line == cleaned_lines[-1] or line in cleaned_lines[-1]:
+                continue
+            if cleaned_lines[-1] in line:
+                cleaned_lines[-1] = line
+            else:
+                cleaned_lines.append(line)
+                
     full_text = "\n\n".join(cleaned_lines)
-    full_text = re.sub(r"(\.\.\.)?\s*(See more|See less|ดูเพิ่มเติม|ดูน้อยลง|แก้ไขแล้ว)", "", full_text, flags=re.IGNORECASE).strip()
-    return full_text
+    
+    # ตรวจสอบหากข้อความเบิ้ลซ้ำ 2 ท่อนเหมือนกันเป๊ะ (A + A)
+    half = len(full_text) // 2
+    if half > 15:
+        first_half = full_text[:half].strip()
+        second_half = full_text[half:].strip()
+        if first_half == second_half:
+            full_text = first_half
+
+    return full_text.strip()
 
 def send_discord_webhook(content, url, image_url=None):
     if not DISCORD_WEBHOOK_URL:
@@ -112,40 +125,49 @@ def get_recent_posts():
             page.wait_for_timeout(4000)
 
             for step in range(5):
+                page.evaluate("""() => {
+                    document.querySelectorAll('div[role="button"], span').forEach(el => {
+                        const txt = (el.innerText || '').trim();
+                        if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
+                            try { el.click(); } catch(e) {}
+                        }
+                    });
+                }""")
+                page.wait_for_timeout(1500)
+
                 extracted = page.evaluate("""
                     () => {
                         document.querySelectorAll('div[role="dialog"]').forEach(el => el.remove());
-                        
-                        document.querySelectorAll('div[role="button"], span').forEach(el => {
-                            const txt = (el.innerText || '').trim();
-                            if (txt === 'See more' || txt === 'ดูเพิ่มเติม') {
-                                try { el.click(); } catch(e) {}
-                            }
-                        });
-
-                        const results = [];
                         const feed = document.querySelector('div[role="feed"]') || document.body;
-                        const articles = feed.querySelectorAll('div[role="article"], div[data-pagelet^="FeedUnit"]');
-
+                        
+                        // เลือกเฉพาะการ์ดโพสต์ชั้นนอกสุด ไม่เอาการ์ดคอมเมนต์
+                        const articles = Array.from(feed.querySelectorAll('div[role="article"], div[data-pagelet^="FeedUnit"]'))
+                            .filter(el => !el.parentElement.closest('div[role="article"]'));
+                        
+                        const results = [];
                         articles.forEach(art => {
-                            if (art.parentElement.closest('div[role="article"]')) return;
-
                             const clone = art.cloneNode(true);
                             clone.querySelectorAll('form, ul, ol, [role="toolbar"], button, [aria-label*="Comment"], [aria-label*="ความคิดเห็น"], [aria-label*="ตอบกลับ"], [aria-label*="Reply"], [aria-label*="reactions"]').forEach(trash => trash.remove());
 
+                            let msgEl = clone.querySelector('div[data-ad-rendering-role="story_message"]') ||
+                                        clone.querySelector('div[data-ad-preview="message"]') ||
+                                        clone.querySelector('div[data-ad-comet-preview="message"]');
+                            
                             let text = '';
-                            const msgNode = clone.querySelector('div[data-ad-preview="message"], div[data-ad-comet-preview="message"]');
-                            if (msgNode) {
-                                text = msgNode.innerText.trim();
+                            if (msgEl) {
+                                text = msgEl.innerText.trim();
                             } else {
-                                const textNodes = Array.from(clone.querySelectorAll('div[dir="auto"], span[dir="auto"]'))
-                                    .filter(node => !node.parentElement.closest('div[dir="auto"]'))
+                                const rawBlocks = Array.from(clone.querySelectorAll('div[dir="auto"]'))
                                     .map(n => n.innerText.trim())
-                                    .filter(t => t.length > 5);
-                                text = textNodes.join('\\n\\n');
+                                    .filter(t => t.length > 5 && !t.includes('ถูกใจ') && !t.includes('แชร์'));
+                                
+                                const uniqueBlocks = rawBlocks.filter((block, idx) => {
+                                    return !rawBlocks.some((other, otherIdx) => otherIdx !== idx && other.includes(block) && other.length > block.length);
+                                });
+                                text = uniqueBlocks.join('\\n\\n');
                             }
 
-                            // ค้นหารูปภาพโพสต์จริง (คัดกรอง emoji และไอคอนระบบทิ้ง)
+                            // ค้นหารูปภาพโพสต์จริง (ข้ามอิโมจิ)
                             let imgUrl = null;
                             const allImgs = Array.from(art.querySelectorAll('img'));
                             for (const img of allImgs) {
@@ -163,7 +185,6 @@ def get_recent_posts():
                                 }
                             }
 
-                            // ค้นหาลิงก์ตรงของโพสต์ (ถ้ามี)
                             let postLink = null;
                             const linkNode = art.querySelector('a[href*="/posts/"], a[href*="/photo/"], a[href*="/photos/"], a[href*="permalink"]');
                             if (linkNode && linkNode.href) {
@@ -174,7 +195,6 @@ def get_recent_posts():
                                 results.push({ text: text, img: imgUrl, link: postLink });
                             }
                         });
-
                         return results;
                     }
                 """)
@@ -183,9 +203,17 @@ def get_recent_posts():
                     clean_text = clean_and_deduplicate_text(item["text"])
                     if not clean_text or len(clean_text) < 10:
                         continue
-                        
-                    post_id = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
-                    if post_id not in collected_posts:
+                    
+                    # สร้าง Hash ที่แม่นยำจากหัวข้อ 50 ตัวอักษรแรก
+                    clean_signature = re.sub(r"[^\w\dก-๙]+", "", clean_text)[:50]
+                    post_id = hashlib.md5(clean_signature.encode("utf-8")).hexdigest()
+
+                    if post_id in collected_posts:
+                        if len(clean_text) > len(collected_posts[post_id]["clean_text"]):
+                            collected_posts[post_id]["clean_text"] = clean_text
+                        if item["img"] and not collected_posts[post_id].get("image_url"):
+                            collected_posts[post_id]["image_url"] = item["img"]
+                    else:
                         collected_posts[post_id] = {
                             "id": post_id,
                             "clean_text": clean_text,
